@@ -42,6 +42,7 @@ class BasicBlock(nn.Module):
         base_width=64,
         dilation=1,
         norm_layer=None,
+        last_activation="relu",
     ):
         super(BasicBlock, self).__init__()
         if norm_layer is None:
