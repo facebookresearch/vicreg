@@ -8,37 +8,37 @@
 import torch
 import resnet
 
-dependencies = ['torch', 'torchvision']
+dependencies = ["torch", "torchvision"]
 
 
 def resnet50(pretrained=True, **kwargs):
-    model = resnet.resnet50(**kwargs)
+    model, _ = resnet.resnet50(**kwargs)
     if pretrained:
         state_dict = torch.hub.load_state_dict_from_url(
             url="https://dl.fbaipublicfiles.com/vicreg/resnet50.pth",
-            map_location='cpu',
+            map_location="cpu",
         )
         model.load_state_dict(state_dict, strict=True)
     return model
 
 
 def resnet50w2(pretrained=True, **kwargs):
-    model = resnet.resnet50x2(**kwargs)
+    model, _ = resnet.resnet50x2(**kwargs)
     if pretrained:
         state_dict = torch.hub.load_state_dict_from_url(
             url="https://dl.fbaipublicfiles.com/vicreg/resnet50x2.pth",
-            map_location='cpu',
+            map_location="cpu",
         )
         model.load_state_dict(state_dict, strict=True)
     return model
 
 
 def resnet200w2(pretrained=True, **kwargs):
-    model = resnet.resnet200x2(**kwargs)
+    model, _ = resnet.resnet200x2(**kwargs)
     if pretrained:
         state_dict = torch.hub.load_state_dict_from_url(
             url="https://dl.fbaipublicfiles.com/vicreg/resnet200x2.pth",
-            map_location='cpu',
+            map_location="cpu",
         )
         model.load_state_dict(state_dict, strict=True)
     return model
