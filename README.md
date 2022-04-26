@@ -111,7 +111,7 @@ This repository is built using the [Barlow Twins](https://github.com/facebookres
 
 ## License
 
-This project is released under CC-BY-NC License, which limits use to non-commercial use. See [LICENSE](LICENSE) for details.
+This project is released under MIT License, which allows commercial use. See [LICENSE](LICENSE) for details.
 
 ## Citation
 If you find this repository useful, please consider giving a star :star: and citation:
