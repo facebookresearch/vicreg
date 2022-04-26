@@ -140,8 +140,13 @@ def main_worker(gpu, args):
 
     backbone, embedding = resnet.__dict__[args.arch](zero_init_residual=True)
     state_dict = torch.load(args.pretrained, map_location="cpu")
-    missing_keys, unexpected_keys = backbone.load_state_dict(state_dict, strict=False)
-    assert missing_keys == [] and unexpected_keys == []
+    if "model" in state_dict:
+        state_dict = state_dict["model"]
+        state_dict = {
+            key.replace("module.backbone.", ""): value
+            for (key, value) in state_dict.items()
+        }
+    backbone.load_state_dict(state_dict, strict=False)
 
     head = nn.Linear(embedding, 1000)
     head.weight.data.normal_(mean=0.0, std=0.01)
