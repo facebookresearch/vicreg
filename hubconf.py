@@ -22,7 +22,7 @@ def resnet50(pretrained=True, **kwargs):
     return model
 
 
-def resnet50w2(pretrained=True, **kwargs):
+def resnet50x2(pretrained=True, **kwargs):
     model, _ = resnet.resnet50x2(**kwargs)
     if pretrained:
         state_dict = torch.hub.load_state_dict_from_url(
@@ -33,7 +33,7 @@ def resnet50w2(pretrained=True, **kwargs):
     return model
 
 
-def resnet200w2(pretrained=True, **kwargs):
+def resnet200x2(pretrained=True, **kwargs):
     model, _ = resnet.resnet200x2(**kwargs)
     if pretrained:
         state_dict = torch.hub.load_state_dict_from_url(
