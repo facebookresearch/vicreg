@@ -13,16 +13,22 @@ import os
 import sys
 import time
 
+import inspect
 import torch
 import torch.nn.functional as F
 from torch import nn, optim
 import torch.distributed as dist
 import torchvision.datasets as datasets
+from tqdm import tqdm
 
 import augmentations as aug
 from distributed import init_distributed_mode
 
 import resnet
+import hubconf as hc
+from logger import logger
+from spectral_analysis import laplacian_analysis
+from folder import ImageFolder
 
 
 def get_arguments():
@@ -73,26 +79,49 @@ def get_arguments():
     parser.add_argument('--local_rank', default=-1, type=int)
     parser.add_argument('--dist-url', default='env://',
                         help='url used to set up distributed training')
+    parser.add_argument('--avoid-dist', action='store_true')
 
+    # Spectral analysis
+    parser.add_argument('--restart_from_checkpoint', action='store_true')
+    parser.add_argument('--distance_metric', type=str, default='euclid', choices=['euclid', 'cosine', 'weiss'])
+    parser.add_argument('--knn', type=int, default=0)
+    parser.add_argument('--sigma', type=float, default=1.)
+    parser.add_argument('--debug_spectral', action='store_true')
     return parser
+
+
+def isdebugging():
+    for frame in inspect.stack():
+        if frame[1].endswith("pydevd.py"):
+            return True
+    return False
 
 
 def main(args):
     torch.backends.cudnn.benchmark = True
     init_distributed_mode(args)
-    print(args)
+    logger.log(args)
     gpu = torch.device(args.device)
-
+    complete_logger = {}
+    stats_file = open(args.exp_dir / "stats.txt", "a", buffering=1)
+    complete_logger["args"] = vars(args)
     if args.rank == 0:
         args.exp_dir.mkdir(parents=True, exist_ok=True)
-        stats_file = open(args.exp_dir / "stats.txt", "a", buffering=1)
-        print(" ".join(sys.argv))
-        print(" ".join(sys.argv), file=stats_file)
+        logger.log(" ".join(sys.argv))
 
     transforms = aug.TrainTransform()
 
-    dataset = datasets.ImageFolder(args.data_dir / "train", transforms)
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
+    training_dataset = "train"  # if not isdebugging() else "imagenet_fake"
+
+    dataset = ImageFolder(args.data_dir / training_dataset, transforms)
+    logger.log("Load the dataset")
+    if dist.is_initialized():
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
+    else:
+        sampler = None
+
+    logger.log("Create sampler")
+
     assert args.batch_size % args.world_size == 0
     per_device_batch_size = args.batch_size // args.world_size
     loader = torch.utils.data.DataLoader(
@@ -101,11 +130,16 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=True,
         sampler=sampler,
+        shuffle=True if sampler is None else False,
     )
-
+    logger.log("Create loader")
     model = VICReg(args).cuda(gpu)
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    if args.restart_from_checkpoint:
+        model.backbone = hc.__dict__[args.arch.replace('x', 'w')](pretrained=True).to(gpu)
+    if dist.is_initialized():
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    logger.log("Create model")
     optimizer = LARS(
         model.parameters(),
         lr=0,
@@ -113,10 +147,10 @@ def main(args):
         weight_decay_filter=exclude_bias_and_norm,
         lars_adaptation_filter=exclude_bias_and_norm,
     )
-
-    if (args.exp_dir / "model.pth").is_file():
+    logger.log("Create optimizer")
+    if (args.exp_dir / "model.pth").is_file() and not args.restart_from_checkpoint:
         if args.rank == 0:
-            print("resuming from checkpoint")
+            logger.log("resuming from checkpoint")
         ckpt = torch.load(args.exp_dir / "model.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
         model.load_state_dict(ckpt["model"])
@@ -126,42 +160,84 @@ def main(args):
 
     start_time = last_logging = time.time()
     scaler = torch.cuda.amp.GradScaler()
-    for epoch in range(start_epoch, args.epochs):
-        sampler.set_epoch(epoch)
-        for step, ((x, y), _) in enumerate(loader, start=epoch * len(loader)):
-            x = x.cuda(gpu, non_blocking=True)
-            y = y.cuda(gpu, non_blocking=True)
 
-            lr = adjust_learning_rate(args, optimizer, loader, step)
+    if args.debug_spectral:
 
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast():
-                loss = model.forward(x, y)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+        logger.log("debugging spectral analysis")
 
-            current_time = time.time()
-            if args.rank == 0 and current_time - last_logging > args.log_freq_time:
-                stats = dict(
-                    epoch=epoch,
-                    step=step,
-                    loss=loss.item(),
-                    time=int(current_time - start_time),
-                    lr=lr,
+        with torch.no_grad():
+            model.eval()
+            complete_logger[f"results"] = {}
+            for k in tqdm(range(2, args.knn, 2)):
+                logger.log(f"knn {k}")
+                progress = logger.get_tqdm(enumerate(loader),
+                                           f'SPECTRAL ANALYSIS',
+                                           leave=True)
+                for step, ((x, y), _) in progress:
+                    if step == 1:
+                        break
+                    logger.log(f"step {step}")
+                    x = model.backbone(x.cuda(gpu, non_blocking=True))
+                    logger.log('first inference done')
+                    y = model.backbone(y.cuda(gpu, non_blocking=True))
+                    logger.log('Inference done')
+                    energy_1, eigenvalues_1, eigenvectors_1, L_1, (A_1, D_1, distances_1) = laplacian_analysis(
+                        data=x, sigma=1., knn=k, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
+                        distance_metric=args.distance_metric)
+                    energy_2, eigenvalues_2, eigenvectors_2, L_2, (A_2, D_2, distances_2) = laplacian_analysis(
+                        data=y, sigma=1., knn=k, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
+                        distance_metric=args.distance_metric)
+                    logger.log('eigenvectors calculation done')
+                    progress.set_description(f"{k}-NN: fun_map-loss 1.T@2: "
+                                             f"{fun_map_loss(eigenvectors_1, eigenvectors_2):.4f} "
+                                             f"2.T@1:{fun_map_loss(eigenvectors_2, eigenvectors_1):.4f}")
+                    complete_logger[f"results"][f"{k}-NN"] = {'e1': eigenvalues_1.tolist(),
+                                                              'e2': eigenvalues_2.tolist()}
+            logger.log(complete_logger, file=stats_file)
+    else:
+        logger.log('Start training')
+        for epoch in range(start_epoch, args.epochs):
+            if dist.is_initialized():
+                sampler.set_epoch(epoch)
+            progress = logger.get_tqdm(enumerate(loader, start=epoch * len(loader)),
+                                       f'TRAIN - epoch {epoch + 1}/{args.epochs}',
+                                       leave=True)
+            for step, ((x, y), _) in progress:
+                x = x.cuda(gpu, non_blocking=True)
+                y = y.cuda(gpu, non_blocking=True)
+
+                lr = adjust_learning_rate(args, optimizer, loader, step)
+
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    loss = model.forward(x, y)
+                progress.set_postfix(loss)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+
+                current_time = time.time()
+
+                if args.rank == 0 and current_time - last_logging > args.log_freq_time:
+                    stats = dict(
+                        epoch=epoch,
+                        step=step,
+                        loss=loss.item(),
+                        time=int(current_time - start_time),
+                        lr=lr,
+                    )
+                    print(json.dumps(stats))
+                    print(json.dumps(stats), file=stats_file)
+                    last_logging = current_time
+            if args.rank == 0:
+                state = dict(
+                    epoch=epoch + 1,
+                    model=model.state_dict(),
+                    optimizer=optimizer.state_dict(),
                 )
-                print(json.dumps(stats))
-                print(json.dumps(stats), file=stats_file)
-                last_logging = current_time
+                torch.save(state, args.exp_dir / "model.pth")
         if args.rank == 0:
-            state = dict(
-                epoch=epoch + 1,
-                model=model.state_dict(),
-                optimizer=optimizer.state_dict(),
-            )
-            torch.save(state, args.exp_dir / "model.pth")
-    if args.rank == 0:
-        torch.save(model.module.backbone.state_dict(), args.exp_dir / "resnet50.pth")
+            torch.save(model.module.backbone.state_dict(), args.exp_dir / "resnet50.pth")
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
@@ -196,9 +272,9 @@ class VICReg(nn.Module):
         y = self.projector(self.backbone(y))
 
         repr_loss = F.mse_loss(x, y)
-
-        x = torch.cat(FullGatherLayer.apply(x), dim=0)
-        y = torch.cat(FullGatherLayer.apply(y), dim=0)
+        if dist.is_initialized():
+            x = torch.cat(FullGatherLayer.apply(x), dim=0)
+            y = torch.cat(FullGatherLayer.apply(y), dim=0)
         x = x - x.mean(dim=0)
         y = y - y.mean(dim=0)
 
@@ -211,13 +287,32 @@ class VICReg(nn.Module):
         cov_loss = off_diagonal(cov_x).pow_(2).sum().div(
             self.num_features
         ) + off_diagonal(cov_y).pow_(2).sum().div(self.num_features)
-
+        rodo_loss = self.calc_rodo_loss(x, y)
         loss = (
-            self.args.sim_coeff * repr_loss
-            + self.args.std_coeff * std_loss
-            + self.args.cov_coeff * cov_loss
+                self.args.sim_coeff * repr_loss
+                + self.args.std_coeff * std_loss
+                + self.args.cov_coeff * cov_loss
         )
         return loss
+
+    def calc_rodo_loss(self, x: torch.Tensor, y: torch.Tensor):
+        """
+        Calculate the RODO loss between two tensors.
+        """
+        energy_1, eigenvalues_1, eigenvectors_1, L_1, (A_1, D_1, distances_1) = laplacian_analysis(
+            data=x, sigma=1., knn=self.args.knn, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
+            distance_metric=self.args.distance_metric)
+        energy_2, eigenvalues_2, eigenvectors_2, L_2, (A_2, D_2, distances_2) = laplacian_analysis(
+            data=y, sigma=1., knn=self.args.knn, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
+            distance_metric=self.args.distance_metric)
+        loss = fun_map_loss(eigenvectors_1, eigenvectors_2)
+        return loss
+
+
+def fun_map_loss(eig_1: torch.Tensor, eig_2: torch.Tensor):
+    fun_map = (eig_1.T @ eig_2).abs()
+    targets = torch.eye(fun_map.shape[0]).to(fun_map.device)
+    return torch.square(fun_map - targets).sum()
 
 
 def Projector(args, embedding):
@@ -244,14 +339,14 @@ def off_diagonal(x):
 
 class LARS(optim.Optimizer):
     def __init__(
-        self,
-        params,
-        lr,
-        weight_decay=0,
-        momentum=0.9,
-        eta=0.001,
-        weight_decay_filter=None,
-        lars_adaptation_filter=None,
+            self,
+            params,
+            lr,
+            weight_decay=0,
+            momentum=0.9,
+            eta=0.001,
+            weight_decay_filter=None,
+            lars_adaptation_filter=None,
     ):
         defaults = dict(
             lr=lr,
@@ -314,6 +409,7 @@ class FullGatherLayer(torch.autograd.Function):
     def forward(ctx, x):
         output = [torch.zeros_like(x) for _ in range(dist.get_world_size())]
         dist.all_gather(output, x)
+
         return tuple(output)
 
     @staticmethod

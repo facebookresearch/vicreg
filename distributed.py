@@ -4,8 +4,7 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-
-
+import inspect
 import torch
 import os
 import torch.distributed as dist
@@ -55,22 +54,34 @@ def save_on_master(*args, **kwargs):
         torch.save(*args, **kwargs)
 
 
-def init_distributed_mode(args):
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        args.rank = int(os.environ["RANK"])
-        args.world_size = int(os.environ['WORLD_SIZE'])
-        args.gpu = int(os.environ['LOCAL_RANK'])
-    elif 'SLURM_PROCID' in os.environ:
-        args.rank = int(os.environ['SLURM_PROCID'])
-        args.gpu = args.rank % torch.cuda.device_count()
+def isdebugging():
+    for frame in inspect.stack():
+        if frame[1].endswith("pydevd.py"):
+            return True
+    return False
 
-        os.environ['RANK'] = str(args.rank)
-        os.environ['LOCAL_RANK'] = str(args.gpu)
-        os.environ['WORLD_SIZE'] = str(args.world_size)
+
+def init_distributed_mode(args):
+    if not args.avoid_dist:
+        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+            args.rank = int(os.environ["RANK"])
+            args.world_size = int(os.environ['WORLD_SIZE'])
+            args.gpu = int(os.environ['LOCAL_RANK'])
+        elif 'SLURM_PROCID' in os.environ and not isdebugging():
+            args.rank = int(os.environ['SLURM_PROCID'])
+            args.gpu = args.rank % torch.cuda.device_count()
+
+            os.environ['RANK'] = str(args.rank)
+            os.environ['LOCAL_RANK'] = str(args.gpu)
+            os.environ['WORLD_SIZE'] = str(args.world_size)
+        else:
+            args.rank = 0
+            print('Not using distributed mode')
+            return
     else:
+        args.rank = 0
         print('Not using distributed mode')
         return
-
     torch.cuda.set_device(args.gpu)
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}, gpu {}'.format(
