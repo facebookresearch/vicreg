@@ -9,6 +9,8 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
+torch.manual_seed(0)
+
 def get_arguments():
 	parser = argparse.ArgumentParser(description="PGD Attack with VICReg", add_help=False)
 
@@ -33,10 +35,7 @@ def get_arguments():
 	return parser
 
 #for testing as an aribitary loss function
-def mse(x_natural, x_adv, model):
-
-	x_natural_embed = model.projector(model.backbone(x_natural))
-	x_adv_embed = model.projector(model.backbone(x_adv))
+def mse(x_natural_embed, x_adv_embed):
 
 	return F.mse_loss(x_natural_embed, x_adv_embed)
 
@@ -52,21 +51,22 @@ def pgd(model,
 	model.eval()
 	batch_size = len(x_natural)
 
-	#initialize a random adversarial example
-	x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
-
 	if distance == 'l_inf':
+
+		#initialize a random adversarial example
+		x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
 
 		for _ in range(perturb_steps):
 
 			x_adv.requires_grad_()
 
+			x_natural_embed = model.projector(model.backbone(x_natural))
+			x_adv_embed = model.projector(model.backbone(x_adv))
+
 			with torch.enable_grad():
-				loss = loss_func(x_natural, x_adv, model)
+				loss = loss_func(x_natural_embed, x_adv_embed)
 
 			grad = torch.autograd.grad(loss, [x_adv])[0]
-
-			model.zero_grad()
 
 			x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
 			x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
@@ -87,8 +87,11 @@ def pgd(model,
 			#zero gradient of optimizer
 			optimizer_delta.zero_grad()
 
+			x_natural_embed = model.projector(model.backbone(x_natural))
+			x_adv_embed = model.projector(model.backbone(x_adv))
+
 			with torch.enable_grad():
-				loss = (-1) * loss_func(x_natural, x_adv, model)
+				loss = (-1) * loss_func(x_natural_embed, x_adv_embed)
 
 			loss.backward()
 
@@ -107,9 +110,12 @@ def pgd(model,
 			delta.data.renorm_(p=2, dim=0, maxnorm=epsilon)
 
 		x_adv = x_natural + delta.data
+		x_adv = torch.clamp(x_adv, 0.0, 1.0)
 
 	#set back to training mode
 	model.train()
+
+	x_adv = Variable(torch.clamp(x_adv, 0.0, 1.0), requires_grad=False)
 
 	return x_adv
 
