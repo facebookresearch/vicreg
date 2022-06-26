@@ -7,6 +7,7 @@ from torchvision import transforms as T
 from main_vicreg import VICReg
 import argparse
 import numpy as np
+import matplotlib.pyplot as plt
 
 def get_arguments():
 	parser = argparse.ArgumentParser(description="PGD Attack with VICReg", add_help=False)
@@ -64,6 +65,9 @@ def pgd(model,
 				loss = loss_func(x_natural, x_adv, model)
 
 			grad = torch.autograd.grad(loss, [x_adv])[0]
+
+			model.zero_grad()
+
 			x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
 			x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
 			x_adv = torch.clamp(x_adv, 0.0, 1.0)
@@ -102,7 +106,7 @@ def pgd(model,
 			delta.data.clamp_(0, 1).sub_(x_natural)
 			delta.data.renorm_(p=2, dim=0, maxnorm=epsilon)
 
-		x_adv = x_natural + delta
+		x_adv = x_natural + delta.data
 
 	#set back to training mode
 	model.train()
@@ -116,12 +120,28 @@ def main(args):
 	model = VICReg(args).cuda(gpu)
 	model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
-	x_natural = np.load('./test_data/cifar10_X.npy')[0]
+	x_natural = np.load('./test_data/cifar10_X.npy')[1]
 	x_natural = np.array(np.expand_dims(x_natural, axis=0), dtype=np.float32)
+
+	#display image
+	x_natural_plt = x_natural[0]
+	plt.imshow(x_natural_plt)
+	plt.show()
+
 	x_natural = np.transpose(x_natural, (0, 3, 1, 2))
 	x_natural = torch.from_numpy(x_natural).to(gpu)
 
-	x_adv = pgd(model, x_natural, mse)
+	x_adv_l_inf = pgd(model, x_natural, mse)
+	x_adv_l_two = pgd(model, x_natural, mse, distance='l_2')
+
+	#display perturbed images
+	x_adv_l_inf_plt = np.transpose(x_adv_l_inf.cpu(), (0, 2, 3, 1))[0]
+	plt.imshow(x_adv_l_inf_plt)
+	plt.show()
+
+	x_adv_l_two_plt = np.transpose(x_adv_l_two.cpu(), (0, 2, 3, 1))[0]
+	plt.imshow(x_adv_l_two_plt)
+	plt.show()
 
 	return
 
