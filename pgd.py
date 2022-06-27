@@ -5,6 +5,9 @@ from torch.autograd import Variable
 import torch.optim as optim
 from torchvision import transforms as T
 from main_vicreg import VICReg
+from main_vicreg import exclude_bias_and_norm
+from main_vicreg import LARS
+import resnet
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,8 +24,14 @@ def get_arguments():
 						help='Size and number of layers of the MLP expander head')
 
 	# Optim
+	parser.add_argument("--epochs", type=int, default=100,
+						help='Number of epochs')
 	parser.add_argument("--batch-size", type=int, default=2048,
 						help='Effective batch size (per worker batch size is [batch-size] / world-size)')
+	parser.add_argument("--base-lr", type=float, default=0.2,
+						help='Base learning rate, effective learning after warmup is [base-lr] * [batch-size] / 256')
+	parser.add_argument("--wd", type=float, default=1e-6,
+						help='Weight decay')
 
 	# Loss
 	parser.add_argument("--sim-coeff", type=float, default=25.0,
@@ -35,9 +44,12 @@ def get_arguments():
 	return parser
 
 #for testing as an aribitary loss function
-def mse(x_natural_embed, x_adv_embed):
+def mse(x_natural, x_adv, model):
 
-	return F.mse_loss(x_natural_embed, x_adv_embed)
+	x_natural_embed = model.projector(model.backbone(x_natural))
+	x_adv_embed = model.projector(model.backbone(x_adv))
+
+	return F.mse_loss(x_adv_embed, x_natural_embed)
 
 def pgd(model,
 		x_natural,
@@ -60,14 +72,10 @@ def pgd(model,
 
 			x_adv.requires_grad_()
 
-			x_natural_embed = model.projector(model.backbone(x_natural))
-			x_adv_embed = model.projector(model.backbone(x_adv))
-
 			with torch.enable_grad():
-				loss = loss_func(x_natural_embed, x_adv_embed)
+				loss = loss_func(x_natural, x_adv, model)
 
 			grad = torch.autograd.grad(loss, [x_adv])[0]
-
 			x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
 			x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
 			x_adv = torch.clamp(x_adv, 0.0, 1.0)
@@ -87,11 +95,8 @@ def pgd(model,
 			#zero gradient of optimizer
 			optimizer_delta.zero_grad()
 
-			x_natural_embed = model.projector(model.backbone(x_natural))
-			x_adv_embed = model.projector(model.backbone(x_adv))
-
 			with torch.enable_grad():
-				loss = (-1) * loss_func(x_natural_embed, x_adv_embed)
+				loss = (-1) * loss_func(x_natural, x_adv, model)
 
 			loss.backward()
 
