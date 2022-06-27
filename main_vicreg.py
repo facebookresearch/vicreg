@@ -12,6 +12,7 @@ import math
 import os
 import sys
 import time
+import tqdm
 
 import torch
 import torch.nn.functional as F
@@ -21,6 +22,7 @@ import torchvision.datasets as datasets
 
 import augmentations as aug
 from distributed import init_distributed_mode
+from pgd import pgd
 
 import resnet
 
@@ -29,8 +31,12 @@ def get_arguments():
     parser = argparse.ArgumentParser(description="Pretrain a resnet model with VICReg", add_help=False)
 
     # Data
-    parser.add_argument("--data-dir", type=Path, default="/path/to/imagenet", required=True,
-                        help='Path to the image net dataset')
+    parser.add_argument("--data-dir", type=Path, default="/data/", required=True,
+                        help='Path to the dataset')
+    parser.add_argument("--dataset-name", type=str, default="cifar10", required=False,
+                        help='Dataset name')
+    parser.add_argument("--img-dim", type=int, default=32, required=False,
+                        help='Dataset name')
 
     # Checkpoints
     parser.add_argument("--exp-dir", type=Path, default="./exp",
@@ -39,15 +45,15 @@ def get_arguments():
                         help='Print logs to the stats.txt file every [log-freq-time] seconds')
 
     # Model
-    parser.add_argument("--arch", type=str, default="resnet50",
+    parser.add_argument("--arch", type=str, default="resnet34",
                         help='Architecture of the backbone encoder network')
-    parser.add_argument("--mlp", default="8192-8192-8192",
+    parser.add_argument("--mlp", default="1024-1024-1024",
                         help='Size and number of layers of the MLP expander head')
 
     # Optim
     parser.add_argument("--epochs", type=int, default=100,
                         help='Number of epochs')
-    parser.add_argument("--batch-size", type=int, default=2048,
+    parser.add_argument("--batch-size", type=int, default=64,
                         help='Effective batch size (per worker batch size is [batch-size] / world-size)')
     parser.add_argument("--base-lr", type=float, default=0.2,
                         help='Base learning rate, effective learning after warmup is [base-lr] * [batch-size] / 256')
@@ -63,23 +69,37 @@ def get_arguments():
                         help='Covariance regularization loss coefficient')
 
     # Running
-    parser.add_argument("--num-workers", type=int, default=10)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
 
     # Distributed
     parser.add_argument('--world-size', default=1, type=int,
                         help='number of distributed processes')
-    parser.add_argument('--local_rank', default=-1, type=int)
+    parser.add_argument('--rank', default=-1, type=int)
     parser.add_argument('--dist-url', default='env://',
                         help='url used to set up distributed training')
+
+    # Adversarial training
+    parser.add_argument("--adv-train", default=False, action="store_true",
+                        help='Add adversarial regularizer to loss')
+    parser.add_argument("--adv-coeff", type=float, default=1.0,
+                        help='Adversarial regularization loss coefficient')
+    parser.add_argument("--pgd-step-size", type=float, default=0.003,
+                        help='PGD attack step size')
+    parser.add_argument("--pgd-epsilon", type=float, default=0.031,
+                        help='PGD attack budget')
+    parser.add_argument("--pgd-perturb-steps", type=int, default=10,
+                        help='PGD attack number of steps')
+    parser.add_argument("--pgd-distance", type=str, default="l_inf",
+                        help='Norm for PGD attack (either "l_inf" or "l_2"')
 
     return parser
 
 
 def main(args):
     torch.backends.cudnn.benchmark = True
-    init_distributed_mode(args)
+    #init_distributed_mode(args)
     print(args)
     gpu = torch.device(args.device)
 
@@ -89,23 +109,35 @@ def main(args):
         print(" ".join(sys.argv))
         print(" ".join(sys.argv), file=stats_file)
 
-    transforms = aug.TrainTransform()
+    transforms = aug.TrainTransform(args.img_dim)
 
-    dataset = datasets.ImageFolder(args.data_dir / "train", transforms)
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
+    if os.path.exists(args.data_dir):
+        download = False
+    else:
+        download = True
+    if args.dataset_name == 'cifar10':
+        dataset = datasets.CIFAR10(root=args.data_dir, train=True, download=download, transform=transforms)
+    elif args.dataset_name == 'cifar100':
+        dataset = datasets.CIFAR100(root=args.data_dir, train=True, download=download, transforms=transforms)
+    elif args.dataset_name == 'imagenet':
+        dataset = datasets.ImageNet(root=args.data_dir, train=True, download=download, transform=transforms)
+    else:
+        raise Exception(f"Dataset string not supported: {args.dataset_name}")
+
+    #sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
     assert args.batch_size % args.world_size == 0
     per_device_batch_size = args.batch_size // args.world_size
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=per_device_batch_size,
         num_workers=args.num_workers,
-        pin_memory=True,
-        sampler=sampler,
+        pin_memory=False,
+        shuffle=True,
     )
 
     model = VICReg(args).cuda(gpu)
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    #model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    #model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
     optimizer = LARS(
         model.parameters(),
         lr=0,
@@ -126,8 +158,8 @@ def main(args):
 
     start_time = last_logging = time.time()
     scaler = torch.cuda.amp.GradScaler()
-    for epoch in range(start_epoch, args.epochs):
-        sampler.set_epoch(epoch)
+    for epoch in tqdm.tqdm(range(start_epoch, args.epochs)):
+        #sampler.set_epoch(epoch)
         for step, ((x, y), _) in enumerate(loader, start=epoch * len(loader)):
             x = x.cuda(gpu, non_blocking=True)
             y = y.cuda(gpu, non_blocking=True)
@@ -190,15 +222,18 @@ class VICReg(nn.Module):
             zero_init_residual=True
         )
         self.projector = Projector(args, self.embedding)
+        self.adv_train = True if args.adv_coeff > 0 else False
+        self.model_stacked = nn.Sequential(self.backbone, self.projector)
 
-    def forward(self, x, y):
-        x = self.projector(self.backbone(x))
-        y = self.projector(self.backbone(y))
+        print("Architecture details:")
+        print(self.backbone)
+        print(self.projector)
 
+    def vicreg_loss(self, x, y):
         repr_loss = F.mse_loss(x, y)
 
-        x = torch.cat(FullGatherLayer.apply(x), dim=0)
-        y = torch.cat(FullGatherLayer.apply(y), dim=0)
+        # x = torch.cat(FullGatherLayer.apply(x), dim=0)
+        # y = torch.cat(FullGatherLayer.apply(y), dim=0)
         x = x - x.mean(dim=0)
         y = y - y.mean(dim=0)
 
@@ -213,11 +248,43 @@ class VICReg(nn.Module):
         ) + off_diagonal(cov_y).pow_(2).sum().div(self.num_features)
 
         loss = (
-            self.args.sim_coeff * repr_loss
-            + self.args.std_coeff * std_loss
-            + self.args.cov_coeff * cov_loss
+                self.args.sim_coeff * repr_loss
+                + self.args.std_coeff * std_loss
+                + self.args.cov_coeff * cov_loss
         )
         return loss
+
+
+    def adversarial_regularizer(self, x, z_x, y, z_y):
+
+        # Determine adversarial examples
+        x_adv = pgd(self.model_stacked, x, self.vicreg_loss, step_size=self.args.pgd_step_size, epsilon=self.args.pgd_epsilon,
+                    perturb_steps=self.args.pgd_perturb_steps, distance=self.args.pgd_distance)
+
+        y_adv = pgd(self.model_stacked, y, self.vicreg_loss, step_size=self.args.pgd_step_size, epsilon=self.args.pgd_epsilon,
+                    perturb_steps=self.args.pgd_perturb_steps, distance=self.args.pgd_distance)
+
+        # Compute embeddings for adversarial examples
+        z_x_adv = self.model_stacked(x_adv)
+        z_y_adv = self.model_stacked(y_adv)
+
+        # Compute VICReg loss for adversarial/natural pairs
+        x_adv_loss = self.vicreg_loss(z_x, z_x_adv)
+        y_adv_loss = self.vicreg_loss(z_y, z_y_adv)
+        return (x_adv_loss + y_adv_loss) / 2.
+
+
+    def forward(self, x, y):
+        z_x = self.model_stacked(x)
+        z_y = self.model_stacked(y)
+
+        total_loss = self.vicreg_loss(z_x, z_y)
+
+        if self.adv_train:
+            adv_loss = self.adversarial_regularizer(x, z_x, y, z_y)
+            total_loss += args.adv_coeff * adv_loss
+
+        return total_loss
 
 
 def Projector(args, embedding):

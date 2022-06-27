@@ -4,9 +4,6 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.optim as optim
 from torchvision import transforms as T
-from main_vicreg import VICReg
-from main_vicreg import exclude_bias_and_norm
-from main_vicreg import LARS
 import resnet
 import argparse
 import numpy as np
@@ -20,7 +17,7 @@ def get_arguments():
 	# Model
 	parser.add_argument("--arch", type=str, default="resnet50",
 						help='Architecture of the backbone encoder network')
-	parser.add_argument("--mlp", default="8192-8192-8192",
+	parser.add_argument("--mlp", default="1024-1024-1024",
 						help='Size and number of layers of the MLP expander head')
 
 	# Optim
@@ -73,7 +70,7 @@ def pgd(model,
 			x_adv.requires_grad_()
 
 			with torch.enable_grad():
-				loss = loss_func(x_natural, x_adv, model)
+				loss = loss_func(model(x_natural), model(x_adv))
 
 			grad = torch.autograd.grad(loss, [x_adv])[0]
 			x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
@@ -96,7 +93,7 @@ def pgd(model,
 			optimizer_delta.zero_grad()
 
 			with torch.enable_grad():
-				loss = (-1) * loss_func(x_natural, x_adv, model)
+				loss = (-1) * loss_func(model(x_natural), model(x_adv))
 
 			loss.backward()
 
@@ -124,42 +121,44 @@ def pgd(model,
 
 	return x_adv
 
-def main(args):
+## COMMENTED DUE TO CIRCULAR IMPORTS
 
-	gpu = torch.device('cuda')
-
-	model = VICReg(args).cuda(gpu)
-	model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
-	x_natural = np.load('./test_data/cifar10_X.npy')[1]
-	x_natural = np.array(np.expand_dims(x_natural, axis=0), dtype=np.float32)
-
-	#display image
-	x_natural_plt = x_natural[0]
-	plt.imshow(x_natural_plt)
-	plt.show()
-
-	x_natural = np.transpose(x_natural, (0, 3, 1, 2))
-	x_natural = torch.from_numpy(x_natural).to(gpu)
-
-	x_adv_l_inf = pgd(model, x_natural, mse)
-	x_adv_l_two = pgd(model, x_natural, mse, distance='l_2')
-
-	#display perturbed images
-	x_adv_l_inf_plt = np.transpose(x_adv_l_inf.cpu(), (0, 2, 3, 1))[0]
-	plt.imshow(x_adv_l_inf_plt)
-	plt.show()
-
-	x_adv_l_two_plt = np.transpose(x_adv_l_two.cpu(), (0, 2, 3, 1))[0]
-	plt.imshow(x_adv_l_two_plt)
-	plt.show()
-
-	return
-
-if __name__ == "__main__":
-	
-	parser = argparse.ArgumentParser('PGD with VICReg', parents=[get_arguments()])
-	args = parser.parse_args()
-	main(args)
-
-
+# def main(args):
+#
+# 	gpu = torch.device('cuda')
+#
+# 	model = VICReg(args).cuda(gpu)
+# 	model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+#
+# 	x_natural = np.load('./test_data/cifar10_X.npy')[1]
+# 	x_natural = np.array(np.expand_dims(x_natural, axis=0), dtype=np.float32)
+#
+# 	#display image
+# 	x_natural_plt = x_natural[0]
+# 	plt.imshow(x_natural_plt)
+# 	plt.show()
+#
+# 	x_natural = np.transpose(x_natural, (0, 3, 1, 2))
+# 	x_natural = torch.from_numpy(x_natural).to(gpu)
+#
+# 	x_adv_l_inf = pgd(model, x_natural, mse)
+# 	x_adv_l_two = pgd(model, x_natural, mse, distance='l_2')
+#
+# 	#display perturbed images
+# 	x_adv_l_inf_plt = np.transpose(x_adv_l_inf.cpu(), (0, 2, 3, 1))[0]
+# 	plt.imshow(x_adv_l_inf_plt)
+# 	plt.show()
+#
+# 	x_adv_l_two_plt = np.transpose(x_adv_l_two.cpu(), (0, 2, 3, 1))[0]
+# 	plt.imshow(x_adv_l_two_plt)
+# 	plt.show()
+#
+# 	return
+#
+# if __name__ == "__main__":
+#
+# 	parser = argparse.ArgumentParser('PGD with VICReg', parents=[get_arguments()])
+# 	args = parser.parse_args()
+# 	main(args)
+#
+#
