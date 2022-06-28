@@ -14,8 +14,15 @@ def calc_ADL_from_dist(dist_matrix: torch.Tensor, sigma=1.):
     L = D - A
     return A, D, L
 
+import torch
+from tqdm import tqdm
 
 def calc_euclid_dist(data: torch.Tensor):
+    if len(data > 1024):
+        results = torch.zeros(len(data), len(data))
+        for x in tqdm(range(len(data))):
+            results[x,:] = ((data[x] - data)**2).sum(-1)
+        return results
     return ((data.unsqueeze(0) - data.unsqueeze(1)) ** 2).sum(-1)
 
 

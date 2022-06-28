@@ -87,6 +87,7 @@ def get_arguments():
     parser.add_argument('--knn', type=int, default=0)
     parser.add_argument('--sigma', type=float, default=1.)
     parser.add_argument('--debug_spectral', action='store_true')
+    parser.add_argument('--finetune_spectral', action='store_true')
     return parser
 
 
@@ -98,6 +99,8 @@ def isdebugging():
 
 
 def main(args):
+    assert not args.finetune_spectral or not args.debug_spectral, "Cannot use both --debug_spectral and --finetune_spectral"
+
     torch.backends.cudnn.benchmark = True
     init_distributed_mode(args)
     logger.log(args)
@@ -130,6 +133,7 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=True,
         sampler=sampler,
+        prefetch_factor=1,
         shuffle=True if sampler is None else False,
     )
     logger.log("Create loader")
@@ -153,6 +157,12 @@ def main(args):
             logger.log("resuming from checkpoint")
         ckpt = torch.load(args.exp_dir / "model.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
+        
+        for k in list(ckpt["model"].keys()):
+            if k.startswith('module.'):
+                ckpt["model"][k.replace('module.', '')] = ckpt["model"][k]
+                del ckpt["model"][k]
+
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
     else:
@@ -168,32 +178,85 @@ def main(args):
         with torch.no_grad():
             model.eval()
             complete_logger[f"results"] = {}
+            l = next(iter(loader))
+            x, y = l[0][0], l[0][1]
+            xs, ys = [], []
+            for virtual_batch in range(4):
+                ox = x[virtual_batch*len(x) // 4:(virtual_batch+1)*len(x) // 4]
+                oy = y[virtual_batch*len(x) // 4:(virtual_batch+1)*len(x) // 4]
+
+                ox = model.backbone(ox.cuda(gpu, non_blocking=True)) # model.projector(y)
+                xs.append(ox.cpu())
+                logger.log(f'vb {virtual_batch} - first inference done')
+                oy = model.backbone(oy.cuda(gpu, non_blocking=True))
+                ys.append(oy.cpu())
+                logger.log(f'vb {virtual_batch} - Inference done')
+            
+            # enter the cpu_zone
+            xs, ys = torch.cat(xs), torch.cat(ys)
+            
             for k in tqdm(range(2, args.knn, 2)):
-                logger.log(f"knn {k}")
-                progress = logger.get_tqdm(enumerate(loader),
-                                           f'SPECTRAL ANALYSIS',
-                                           leave=True)
-                for step, ((x, y), _) in progress:
-                    if step == 1:
-                        break
-                    logger.log(f"step {step}")
-                    x = model.backbone(x.cuda(gpu, non_blocking=True))
-                    logger.log('first inference done')
-                    y = model.backbone(y.cuda(gpu, non_blocking=True))
-                    logger.log('Inference done')
-                    energy_1, eigenvalues_1, eigenvectors_1, L_1, (A_1, D_1, distances_1) = laplacian_analysis(
-                        data=x, sigma=1., knn=k, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
-                        distance_metric=args.distance_metric)
-                    energy_2, eigenvalues_2, eigenvectors_2, L_2, (A_2, D_2, distances_2) = laplacian_analysis(
-                        data=y, sigma=1., knn=k, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
-                        distance_metric=args.distance_metric)
-                    logger.log('eigenvectors calculation done')
-                    progress.set_description(f"{k}-NN: fun_map-loss 1.T@2: "
-                                             f"{fun_map_loss(eigenvectors_1, eigenvectors_2):.4f} "
-                                             f"2.T@1:{fun_map_loss(eigenvectors_2, eigenvectors_1):.4f}")
-                    complete_logger[f"results"][f"{k}-NN"] = {'e1': eigenvalues_1.tolist(),
-                                                              'e2': eigenvalues_2.tolist()}
+                logger.log(f"knn {k}")        
+                energy_1, eigenvalues_1, eigenvectors_1, L_1, (A_1, D_1, distances_1) = laplacian_analysis(
+                    data=xs, sigma=1., knn=k, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
+                    distance_metric=args.distance_metric)
+                energy_2, eigenvalues_2, eigenvectors_2, L_2, (A_2, D_2, distances_2) = laplacian_analysis(
+                    data=ys, sigma=1., knn=k, logvars=None, norm_lap=True, norm_eigs=False, n_pairs=0,
+                    distance_metric=args.distance_metric)
+                logger.log('eigenvectors calculation done')
+                print(f"{k}-NN: fun_map-loss 1.T@2: "
+                                            f"{fun_map_loss(eigenvectors_1, eigenvectors_2):.4f} "
+                                            f"2.T@1:{fun_map_loss(eigenvectors_2, eigenvectors_1):.4f}")
+                complete_logger[f"results"][f"{k}-NN"] = {'e1': eigenvalues_1.tolist(),
+                                                            'e2': eigenvalues_2.tolist()}
+            
+            assert False # don't overwrite old results please
             logger.log(complete_logger, file=stats_file)
+    elif args.finetune_spectral:
+        logger.log('Start finetuning')
+        for epoch in range(start_epoch, args.epochs):
+            if dist.is_initialized():
+                sampler.set_epoch(epoch)
+            progress = logger.get_tqdm(enumerate(loader, start=epoch * len(loader)),
+                                       f'TRAIN - epoch {epoch + 1}/{args.epochs}',
+                                       leave=True)
+            for step, ((x, y), _) in progress:
+                x = x.cuda(gpu, non_blocking=True)
+                y = y.cuda(gpu, non_blocking=True)
+
+                lr = adjust_learning_rate(args, optimizer, loader, step)
+
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    loss = model.forward(x, y)
+                progress.set_postfix(loss)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                exit()
+
+                current_time = time.time()
+
+                if args.rank == 0 and current_time - last_logging > args.log_freq_time:
+                    stats = dict(
+                        epoch=epoch,
+                        step=step,
+                        loss=loss.item(),
+                        time=int(current_time - start_time),
+                        lr=lr,
+                    )
+                    print(json.dumps(stats))
+                    print(json.dumps(stats), file=stats_file)
+                    last_logging = current_time
+            if args.rank == 0:
+                state = dict(
+                    epoch=epoch + 1,
+                    model=model.state_dict(),
+                    optimizer=optimizer.state_dict(),
+                )
+                torch.save(state, args.exp_dir / "model.pth")
+        if args.rank == 0:
+            torch.save(model.module.backbone.state_dict(), args.exp_dir / "resnet50.pth")
     else:
         logger.log('Start training')
         for epoch in range(start_epoch, args.epochs):
@@ -271,19 +334,28 @@ class VICReg(nn.Module):
         x = self.projector(self.backbone(x))
         y = self.projector(self.backbone(y))
 
+        print(dist.get_rank(), 'x', x.shape) # TODO piallami
+
         repr_loss = F.mse_loss(x, y)
         if dist.is_initialized():
             x = torch.cat(FullGatherLayer.apply(x), dim=0)
             y = torch.cat(FullGatherLayer.apply(y), dim=0)
+
+        print(dist.get_rank(), 'x after gather', x.shape) # TODO piallami
+
         x = x - x.mean(dim=0)
         y = y - y.mean(dim=0)
 
         std_x = torch.sqrt(x.var(dim=0) + 0.0001)
         std_y = torch.sqrt(y.var(dim=0) + 0.0001)
+
+        print(dist.get_rank(), 'std_x', std_x.shape) # TODO piallami
+
         std_loss = torch.mean(F.relu(1 - std_x)) / 2 + torch.mean(F.relu(1 - std_y)) / 2
 
         cov_x = (x.T @ x) / (self.args.batch_size - 1)
         cov_y = (y.T @ y) / (self.args.batch_size - 1)
+        print(dist.get_rank(), 'cov_x', cov_x.shape) # TODO piallami
         cov_loss = off_diagonal(cov_x).pow_(2).sum().div(
             self.num_features
         ) + off_diagonal(cov_y).pow_(2).sum().div(self.num_features)
