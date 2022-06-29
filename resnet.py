@@ -296,6 +296,9 @@ class ResNet(nn.Module):
 
         return x
 
+def resnet18(**kwargs):
+    return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs), 512
+
 
 def resnet18(**kwargs):
     return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs), 512
