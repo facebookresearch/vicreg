@@ -94,6 +94,23 @@ def get_arguments():
     parser.add_argument("--pgd-distance", type=str, default="l_inf",
                         help='Norm for PGD attack (either "l_inf" or "l_2"')
 
+    # Augmentations
+    parser.add_argument("--gaussian-sigma", type=float, default=2.0,
+                        help='Amount of noise in Gaussian blur')
+    parser.add_argument("--gaussian-prob", type=float, default=0.5,
+                        help='Probability of applying Gaussian blur')
+    parser.add_argument("--solarization-prob", type=float, default=0.1,
+                        help='Probability of applying solarization')
+    parser.add_argument("--grayscale-prob", type=float, default=0.2,
+                        help='Probability of applying grayscale')
+    parser.add_argument("--color-jitter-prob", type=float, default=0.8,
+                        help='Probability of applying random crop')
+    parser.add_argument("--min-crop-area", type=float, default=0.08,
+                        help='Minimum crop area, as fraction of original area')
+    parser.add_argument("--max-crop-area", type=float, default=1.0,
+                        help='Maximum crop area, as fraction of original area')
+    parser.add_argument("--flip-prob", type=float, default=0.5,
+                        help='Probability of applying horizontal clip')
     return parser
 
 
@@ -109,7 +126,12 @@ def main(args):
         print(" ".join(sys.argv))
         print(" ".join(sys.argv), file=stats_file)
 
-    transforms = aug.TrainTransform(args.img_dim)
+    training_on_imagenet = args.dataset_name == 'imagenet'
+    transforms = aug.TrainTransform(args.img_dim, gaussian_sigma=args.gaussian_sigma, gaussian_prob=args.gaussian_prob,
+                                    solarization_prob=args.solarization_prob, grayscale_prob=args.grayscale_prob,
+                                    color_jitter_prob=args.color_jitter_prob, min_crop_area=args.min_crop_area,
+                                    max_crop_area=args.max_crop_area, flip_prob=args.flip_prob,
+                                    imagenet_norm=training_on_imagenet)
 
     if os.path.exists(args.data_dir):
         download = False
@@ -193,7 +215,7 @@ def main(args):
             )
             torch.save(state, args.exp_dir / "model.pth")
     if args.rank == 0:
-        torch.save(model.state_dict(), args.exp_dir / "resnet50.pth")
+        torch.save(model.state_dict(), args.exp_dir / args.arch + ".pth")
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
