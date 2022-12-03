@@ -69,7 +69,7 @@ Install PyTorch ([pytorch.org](http://pytorch.org)) and download [ImageNet](http
 To pretrain VICReg with ResNet-50 on a single node with 8 GPUs for 100 epochs, run:
 
 ```
-python -m torch.distributed.launch --nproc_per_node=8 main_vicreg.py --data-dir /path/to/imagenet/ --exp-dir /path/to/experiment/ --arch resnet50 --epochs 100 --batch-size 512 --base-lr 0.3
+torchrun --nproc_per_node=8 main_vicreg.py --data-dir /path/to/imagenet/ --exp-dir /path/to/experiment/ --arch resnet50 --epochs 100 --batch-size 512 --base-lr 0.3
 ```
 
 ### Multi-node training with SLURM
