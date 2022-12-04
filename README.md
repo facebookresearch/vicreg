@@ -62,7 +62,7 @@ resnet200x2 = torch.hub.load('facebookresearch/vicreg:main', 'resnet200x2')
 
 ## Training
 
-Install PyTorch ([pytorch.org](http://pytorch.org)) and download [ImageNet](https://imagenet.stanford.edu/). The code has been developed for PyTorch version 1.7.1 and torchvision version 0.8.2, but should work with other versions just as well.
+Install PyTorch ([pytorch.org](http://pytorch.org)) and download [ImageNet](https://imagenet.stanford.edu/). The code has been developed for PyTorch version 1.8.1 and torchvision version 0.9.1, but should work with other versions just as well.
 
 ### Single-node local training
 
