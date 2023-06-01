@@ -109,12 +109,21 @@ def main(args):
         pin_memory=True,
         sampler=sampler,
     )
-
-    model = VICReg(args).cuda(gpu)
+    # ! need to have two instances of the same architecture to deal with
+    # IR and RGB images separately
+    model_rgb = VICReg(args, num_channels_lr=(3, 1)).cuda(gpu)
+    model_IR = VICReg(args, num_channels_lr=(1,3)).cuda(gpu)
 #     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
-    optimizer = LARS(
-        model.parameters(),
+    optimizer_rgb = LARS(
+        model_rgb.parameters(),
+        lr=0,
+        weight_decay=args.wd,
+        weight_decay_filter=exclude_bias_and_norm,
+        lars_adaptation_filter=exclude_bias_and_norm,
+    )
+    optimizer_IR = LARS(
+        model_IR.parameters(),
         lr=0,
         weight_decay=args.wd,
         weight_decay_filter=exclude_bias_and_norm,
@@ -122,53 +131,72 @@ def main(args):
     )
 
     if (args.exp_dir / "model.pth").is_file():
-        if args.rank == 0:
-            print("resuming from checkpoint")
+        # if args.rank == 0:
+        print("resuming from checkpoint")
         ckpt = torch.load(args.exp_dir / "model.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
-        model.load_state_dict(ckpt["model"])
-        optimizer.load_state_dict(ckpt["optimizer"])
+        model_rgb.load_state_dict(ckpt["model_rgb"])
+        model_IR.load_state_dict(ckpt["model_IR"])
+        optimizer_rgb.load_state_dict(ckpt["optimizer_rgb"])
+        optimizer_IR.load_state_dict(ckpt["optimizer_IR"])
     else:
         start_epoch = 0
 
     start_time = last_logging = time.time()
-    scaler = torch.cuda.amp.GradScaler()
+    scaler_rgb = torch.cuda.amp.GradScaler()
+    scaler_IR = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
         # sampler.set_epoch(epoch)
         for step, ((x, y), _) in enumerate(loader, start=epoch * len(loader)):
             x = x.cuda(gpu, non_blocking=True)
+            y = y.type(torch.cuda.HalfTensor)
             y = y.cuda(gpu, non_blocking=True)
-
-            lr = adjust_learning_rate(args, optimizer, loader, step)
-
-            optimizer.zero_grad()
+            
+            lr_rgb = adjust_learning_rate(args, optimizer_rgb, loader, step)
+            
+            # rgb model
+            optimizer_rgb.zero_grad()
             with torch.cuda.amp.autocast():
-                loss = model.forward(x, y)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+                loss_rgb = model_rgb.forward(x, y)
+            scaler_rgb.scale(loss_rgb).backward()
+            scaler_rgb.step(optimizer_rgb)
+            scaler_rgb.update()
+            
+            # IR model
+            lr_IR = adjust_learning_rate(args, optimizer_IR, loader, step)
+            optimizer_IR.zero_grad()
+            with torch.cuda.amp.autocast():
+                loss_IR = model_IR.forward(y, x)
+            scaler_IR.scale(loss_IR).backward()
+            scaler_IR.step(optimizer_IR)
+            scaler_IR.update()
 
             current_time = time.time()
-            if args.rank == 0 and current_time - last_logging > args.log_freq_time:
-                stats = dict(
-                    epoch=epoch,
-                    step=step,
-                    loss=loss.item(),
-                    time=int(current_time - start_time),
-                    lr=lr,
-                )
-                print(json.dumps(stats))
-                print(json.dumps(stats), file=stats_file)
-                last_logging = current_time
-        if args.rank == 0:
-            state = dict(
-                epoch=epoch + 1,
-                model=model.state_dict(),
-                optimizer=optimizer.state_dict(),
+            # if args.rank == 0 and current_time - last_logging > args.log_freq_time:
+            stats = dict(
+                epoch=epoch,
+                step=step,
+                loss_rgb=loss_rgb.item(),
+                loss_IR=loss_IR.item(),
+                time=int(current_time - start_time),
+                lr_rgb=lr_rgb,
+                lr_IR=lr_IR
             )
-            torch.save(state, args.exp_dir / "model.pth")
-    if args.rank == 0:
-        torch.save(model.module.backbone.state_dict(), args.exp_dir / "resnet50.pth")
+            print(json.dumps(stats))
+            print(json.dumps(stats), file=stats_file)
+            last_logging = current_time
+        #if args.rank == 0:
+        state = dict(
+            epoch=epoch + 1,
+            model_rgb=model_rgb.state_dict(),
+            model_IR=model_IR.state_dict(),
+            optimizer_rgb=optimizer_rgb.state_dict(),
+            optimizer_IR=optimizer_IR.state_dict(),
+        )
+        torch.save(state, args.exp_dir / "model.pth")
+    #if args.rank == 0:
+    torch.save(model_rgb.module.backbone.state_dict(), args.exp_dir / "resnet50_rgb.pth")
+    torch.save(model_IR.module.backbone.state_dict(), args.exp_dir / "resnet50_IR.pth")
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
@@ -189,23 +217,40 @@ def adjust_learning_rate(args, optimizer, loader, step):
 
 
 class VICReg(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, num_channels_lr):
+        # num_channels = (left branch channels, right branch channels)
         super().__init__()
         self.args = args
         self.num_features = int(args.mlp.split("-")[-1])
-        self.backbone, self.embedding = resnet.__dict__[args.arch](
-            zero_init_residual=True
+        # remember there is always a branch with 1xN input and another branch
+        # 3xN input.
+        print(num_channels_lr)
+        self.backbone_left, self.embedding_left = resnet.__dict__[args.arch](
+            zero_init_residual=True,
+            num_channels=num_channels_lr[0]
         )
-        self.projector = Projector(args, self.embedding)
+        self.projector_left = Projector(args, self.embedding_left)
+        
+        self.backbone_right, self.embedding_right = resnet.__dict__[args.arch](
+            zero_init_residual=True,
+            num_channels=num_channels_lr[1]
+        )
+        self.projector_right = Projector(args, self.embedding_right)
 
     def forward(self, x, y):
-        x = self.projector(self.backbone(x))
-        y = self.projector(self.backbone(y))
+        x_in = self.backbone_left(x)
+        x = self.projector_left(x_in)
+        # how does this line fix the type conversion thing?!
+#         y = y.type(torch.cuda.HalfTensor)
+        y_in = self.backbone_right(y)
+        y = self.projector_right(y_in)
 
+        # note this line might need to modified to adjust for different dimensions
+        # of x and y
         repr_loss = F.mse_loss(x, y)
 
-        x = torch.cat(FullGatherLayer.apply(x), dim=0)
-        y = torch.cat(FullGatherLayer.apply(y), dim=0)
+#         x = torch.cat(x, dim=0)
+#         y = torch.cat(y, dim=0)
         x = x - x.mean(dim=0)
         y = y - y.mean(dim=0)
 
