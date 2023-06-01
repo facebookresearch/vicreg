@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 
-def sage_pairloader(path: "str") -> tuple[np.ndarray, np.ndarray]:
+def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
     """SAGE loader for pytorch `DataLoader` class.
     This function should be used as the `loader` argument in the
     `torch.utils.data.DataLoader` class. The `path` input is the path to
