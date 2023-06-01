@@ -19,9 +19,6 @@ from torch import nn, optim
 import torch.distributed as dist
 import torchvision.datasets as datasets
 
-import augmentations as aug
-from distributed import init_distributed_mode
-
 import resnet
 
 from sage_transform import SageTransform
@@ -97,22 +94,17 @@ def main(args):
     # note tha the data_dir should contain the rgb and thermal directories
     transform = SageTransform()
     dataset = SageFolder(args.data_dir / "train/pairs", transform=transform)
-    # loader = torch.utils.data.DataLoader(
-    #         dataset,
-    #         batch_size=64,
-    #         num_workers=1,
-    #         pin_memory=True,
-    #         # sampler=sampler,
-    # )
 
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
-    assert args.batch_size % args.world_size == 0
-    per_device_batch_size = args.batch_size // args.world_size
+    # sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
+    sampler = torch.utils.data.RandomSampler(dataset)
+
+    # assert args.batch_size % args.world_size == 0
+    # per_device_batch_size = args.batch_size // args.world_size
     # TODO YL: need to modify this part to change image loading method. Two separate
     # images must be loaded rather than just one image with augmentation.
     loader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=per_device_batch_size,
+        batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=True,
         sampler=sampler,
@@ -120,7 +112,7 @@ def main(args):
 
     model = VICReg(args).cuda(gpu)
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
     optimizer = LARS(
         model.parameters(),
         lr=0,
@@ -142,7 +134,7 @@ def main(args):
     start_time = last_logging = time.time()
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
-        sampler.set_epoch(epoch)
+        # sampler.set_epoch(epoch)
         for step, ((x, y), _) in enumerate(loader, start=epoch * len(loader)):
             x = x.cuda(gpu, non_blocking=True)
             y = y.cuda(gpu, non_blocking=True)
