@@ -185,6 +185,15 @@ def main(args):
             print(json.dumps(stats))
             print(json.dumps(stats), file=stats_file)
             last_logging = current_time
+            if step % 1000 == 0:
+                state = dict(
+                    epoch=epoch,
+                    model_rgb=model_rgb.state_dict(),
+                    model_IR=model_IR.state_dict(),
+                    optimizer_rgb=optimizer_rgb.state_dict(),
+                    optimizer_IR=optimizer_IR.state_dict(),
+                )
+                torch.save(state, args.exp_dir / "model.pth")
         #if args.rank == 0:
         state = dict(
             epoch=epoch + 1,
@@ -224,7 +233,7 @@ class VICReg(nn.Module):
         self.num_features = int(args.mlp.split("-")[-1])
         # remember there is always a branch with 1xN input and another branch
         # 3xN input.
-        print(num_channels_lr)
+#         print(num_channels_lr)
         self.backbone_left, self.embedding_left = resnet.__dict__[args.arch](
             zero_init_residual=True,
             num_channels=num_channels_lr[0]
