@@ -1,0 +1,15 @@
+Bootstrap: shub
+From: shub://nvcr.io/nvidia/pytorch:22.06-py3
+
+
+# %setup
+
+# %files
+
+
+
+
+%labels
+    Author brookluo34@hotmail.com
+    Version v0.0.1
+    SAGE original
