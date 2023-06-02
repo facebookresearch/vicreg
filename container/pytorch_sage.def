@@ -1,7 +1,5 @@
-Bootstrap: shub
-From: shub://nvcr.io/nvidia/pytorch:22.06-py3
-
-
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:23.04-py3
 # %setup
 
 # %files

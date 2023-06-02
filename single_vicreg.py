@@ -185,7 +185,7 @@ def main(args):
             print(json.dumps(stats))
             print(json.dumps(stats), file=stats_file)
             last_logging = current_time
-            if step % 1000 == 0:
+            if step % 500 == 0:
                 state = dict(
                     epoch=epoch,
                     model_rgb=model_rgb.state_dict(),
