@@ -24,9 +24,6 @@ from distributed import init_distributed_mode
 
 import resnet
 
-from sage_transform import SageTransform
-from sage_loader import SageFolder
-
 
 def get_arguments():
     parser = argparse.ArgumentParser(description="Pretrain a resnet model with VICReg", add_help=False)
@@ -81,8 +78,8 @@ def get_arguments():
 
 
 def main(args):
-    # torch.backends.cudnn.benchmark = True
-    # init_distributed_mode(args)
+    torch.backends.cudnn.benchmark = True
+    init_distributed_mode(args)
     print(args)
     gpu = torch.device(args.device)
 
@@ -92,24 +89,12 @@ def main(args):
         print(" ".join(sys.argv))
         print(" ".join(sys.argv), file=stats_file)
 
-    # transforms = aug.TrainTransform()
-    # dataset = datasets.ImageFolder(args.data_dir / "train", transforms)
-    # note tha the data_dir should contain the rgb and thermal directories
-    transform = SageTransform()
-    dataset = SageFolder(args.data_dir / "train/pairs", transform=transform)
-    # loader = torch.utils.data.DataLoader(
-    #         dataset,
-    #         batch_size=64,
-    #         num_workers=1,
-    #         pin_memory=True,
-    #         # sampler=sampler,
-    # )
+    transforms = aug.TrainTransform()
 
+    dataset = datasets.ImageFolder(args.data_dir / "train", transforms)
     sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
     assert args.batch_size % args.world_size == 0
     per_device_batch_size = args.batch_size // args.world_size
-    # TODO YL: need to modify this part to change image loading method. Two separate
-    # images must be loaded rather than just one image with augmentation.
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=per_device_batch_size,
