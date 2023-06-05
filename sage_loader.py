@@ -21,10 +21,8 @@ def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
     Parameters
     ----------
     path : str
-        Tuple contains the path and class index. The first element is the 
-        path to the txt file that contains the filename pairs of the rgb (.jpg)
-        and thermal (.csv) files. The second element is the class index, which
-        is not used in this function, but given by `DataLoader` class.
+        A path to the txt file that contains the filename pairs of the rgb (.jpg)
+        and thermal (.csv) files.
 
     Returns
     -------
@@ -46,8 +44,8 @@ def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
                          "load the images")
     with open(file_path, "r") as fp:
         lines = fp.readlines()
-    rgb_path = Path(lines[0].strip())
-    thermal_path = Path(lines[1].strip())
+    rgb_path = Path(file_path, lines[0].strip())
+    thermal_path = Path(file_path, lines[1].strip())
     # print(rgb_path.name, thermal_path.name)
     # return ret_dataset
     # rgb_dir = train_dir / "rgb"
