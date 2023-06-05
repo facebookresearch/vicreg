@@ -1,11 +1,33 @@
 Bootstrap: docker
-From: nvcr.io/nvidia/pytorch:23.04-py3
+From: nvcr.io/nvidia/pytorch:21.07-py3
+# ALCF ThetaGPU
+# Cuda compilation tools, release 11.4, V11.4.152
+# Build cuda_11.4.r11.4/compiler.30521435_0
+
 # %setup
 
 # %files
 
+%test
+# testing torch and cuda version
+    pip show torch | grep -i "version" | grep "1.10.0"
+    if [ $? -eq 0 ]; then
+        echo "PyTorch 1.10.0 is installed correctly."
+    else
+        echo "Container base does not have PyTorch 1.10.0."
+        exit 1
+    fi
+    nvcc --version | grep -i release | grep 11.4
+    if [ $? -eq 0 ]; then
+        echo "Cuda 11.4 is installed correctly."
+    else
+        echo "Container base does not have Cuda 11.4."
+        exit 1
+    fi
 
-
+# %runscript
+#     echo "$*"
+#     exec $@
 
 %labels
     Author brookluo34@hotmail.com
