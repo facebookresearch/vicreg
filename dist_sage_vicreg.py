@@ -189,15 +189,15 @@ def main(args):
                 print(json.dumps(stats))
                 print(json.dumps(stats), file=stats_file)
                 last_logging = current_time
-                if step % 500 == 0:
-                    state = dict(
-                        epoch=epoch,
-                        model_rgb=model_rgb.state_dict(),
-                        model_IR=model_IR.state_dict(),
-                        optimizer_rgb=optimizer_rgb.state_dict(),
-                        optimizer_IR=optimizer_IR.state_dict(),
-                    )
-                    torch.save(state, args.exp_dir / "model.pth")
+#                 if step % 500 == 0:
+#                     state = dict(
+#                         epoch=epoch,
+#                         model_rgb=model_rgb.state_dict(),
+#                         model_IR=model_IR.state_dict(),
+#                         optimizer_rgb=optimizer_rgb.state_dict(),
+#                         optimizer_IR=optimizer_IR.state_dict(),
+#                     )
+#                     torch.save(state, args.exp_dir / "model.pth")
         if args.rank == 0:
             state = dict(
                 epoch=epoch + 1,

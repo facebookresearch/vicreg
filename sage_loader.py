@@ -46,9 +46,9 @@ def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
         lines = fp.readlines()
     # should be the pair file great-grandparent directory, which is the master
     # data directory. train / pairs / $node / *.txt
-    rgb_path = Path(file_path.parent.parent.parent, "rgb/processed", lines[0].strip())
+    rgb_path = Path(file_path.parent.parent.parent, "rgb", lines[0].strip())
     thermal_path = Path(file_path.parent.parent.parent, "thermal", lines[1].strip())
-    # print(rgb_path.name, thermal_path.name)
+#     print(rgb_path.name, thermal_path.name)
     # return ret_dataset
     # rgb_dir = train_dir / "rgb"
     # thermal_dir = train_dir / "thermal"
