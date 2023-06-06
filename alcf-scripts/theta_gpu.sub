@@ -1,0 +1,28 @@
+#! /bin/bash
+#PBS -A @ALLOCATION@
+#PBS -q @QUEUE@
+#PBS -l walltime=@WALLTIME@
+#PBS -l filesystems=home:eagle
+#PBS -l select=@NODES@:ncpus=@PPN@:mpiprocs=@NODE_PROCS@:ompthreads=@NUM_THREADS@:mem=109GB
+#PBS @("@CHAINED_JOB_ID@" != "" ? "-W depend=afterany:@CHAINED_JOB_ID@" : "")@
+#PBS -N @SIMULATION_NAME@
+#PBS -m abe
+#PBS -M @EMAIL@
+#PBS -k eod
+#PBS -o @RUNDIR@/@SIMULATION_NAME@.out
+#PBS -e @RUNDIR@/@SIMULATION_NAME@.err
+
+data_path=""
+src_dir=""
+# this must be *.py
+model_pyfile="dist_sage_vicreg.py"
+container_path=""
+chkpt_path=""
+num_epoch=100
+batch_size=64
+base_lr=0.3
+
+cd $src_dir
+singularity exec --nv -B $data_path:/mydata $chkpt_path:/mycheckpoint $container_path \
+    python -m torch.distributed.launch --nproc_per_node=8 $model_pyfile --data-dir /mydata \
+    --exp-dir /mycheckpoint --arch resnet50 --epochs $num_epoch --batch-size $batch_size --base-lr $base_lr
