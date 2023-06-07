@@ -27,6 +27,9 @@ from sage_loader import SageFolder
 # Vision Transformers
 import sys
 sys.path.append("../pytorch-image-models-sage")
+# althernative add path by
+# export PYTHONPATH="${PYTHONPATH}:full_path_to_pytorch-image-models-sage"
+
 from timm.models import vision_transformer as vit_models
 
 
@@ -243,18 +246,36 @@ class VICReg(nn.Module):
         self.num_features = int(args.mlp.split("-")[-1])
         # remember there is always a branch with 1xN input and another branch
         # 3xN input.
-#         print(num_channels_lr)
-        self.backbone_left, self.embedding_left = resnet.__dict__[args.arch](
-            zero_init_residual=True,
-            num_channels=num_channels_lr[0]
-        )
-        self.projector_left = Projector(args, self.embedding_left)
-        
-        self.backbone_right, self.embedding_right = resnet.__dict__[args.arch](
-            zero_init_residual=True,
-            num_channels=num_channels_lr[1]
-        )
-        self.projector_right = Projector(args, self.embedding_right)
+        # print(num_channels_lr)
+        # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
+        # note that only flexViT can use the patch size argument
+        if args.arch in vit_models.__all__:
+            self.backbone_left = vit_models.__dict__[args.arch](
+                patch_size=args.patch_size,
+                drop_path_rate=args.drop_path_rate,  # stochastic depth
+                in_chans=num_channels_lr[0],
+            )
+            self.embedding_left = self.backbone_left.embed_dim
+            self.projector_left = Projector(args, self.embedding_left)
+            self.backbone_right = vit_models.__dict__[args.arch](
+                patch_size=args.patch_size,
+                drop_path_rate=args.drop_path_rate,  # stochastic depth
+                in_chans=num_channels_lr[1],
+            )
+            self.embedding_right = self.backbone_right.embed_dim
+            self.projector_right = Projector(args, self.embedding_right)
+        else:
+            self.backbone_left, self.embedding_left = resnet.__dict__[args.arch](
+                zero_init_residual=True,
+                num_channels=num_channels_lr[0]
+            )
+            self.projector_left = Projector(args, self.embedding_left)
+            
+            self.backbone_right, self.embedding_right = resnet.__dict__[args.arch](
+                zero_init_residual=True,
+                num_channels=num_channels_lr[1]
+            )
+            self.projector_right = Projector(args, self.embedding_right)
 
     def forward(self, x, y):
         x_in = self.backbone_left(x)
