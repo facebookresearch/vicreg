@@ -80,7 +80,7 @@ def get_arguments():
 
 
 def main(args):
-    # torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True
     init_distributed_mode(args)
     print(args)
     gpu = torch.device(args.device)
@@ -116,8 +116,10 @@ def main(args):
     # IR and RGB images separately
     model_rgb = VICReg(args, num_channels_lr=(3, 1)).cuda(gpu)
     model_IR = VICReg(args, num_channels_lr=(1,3)).cuda(gpu)
-#     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    model_rgb = nn.SyncBatchNorm.convert_sync_batchnorm(model_rgb)
+    model_IR = nn.SyncBatchNorm.convert_sync_batchnorm(model_IR)
+    model_rgb = torch.nn.parallel.DistributedDataParallel(model_rgb, device_ids=[gpu])
+    model_IR = torch.nn.parallel.DistributedDataParallel(model_IR, device_ids=[gpu])
     optimizer_rgb = LARS(
         model_rgb.parameters(),
         lr=0,
