@@ -26,13 +26,11 @@ from sage_loader import SageFolder
 
 # Vision Transformers
 import sys
-# sys.path.append("../pytorch-image-models-sage")
+sys.path.append("../dino-sage")
 # althernative add path by
-# export PYTHONPATH="${PYTHONPATH}:full_path_to_pytorch-image-models-sage"
-# from timm.models import vision_transformer as vit_models
-sys.path.append("../self_supervised_bird_analysis")
-import vision_transformer as vit_models
+# export PYTHONPATH="${PYTHONPATH}:full_path_to_repo"
 
+import vision_transformer as vit_models
 
 
 def get_arguments():
@@ -254,7 +252,7 @@ class VICReg(nn.Module):
         # print(num_channels_lr)
         # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
         # note that only flexViT can use the patch size argument
-        if args.arch in list(vit_models.__dict__.keys()): # vit_models.__all__:
+        if args.arch in vit_models.__dict__.keys():
             self.backbone_left = vit_models.__dict__[args.arch](
                 patch_size=args.patch_size,
                 drop_path_rate=args.drop_path_rate,  # stochastic depth
