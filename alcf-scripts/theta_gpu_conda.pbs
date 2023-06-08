@@ -16,21 +16,23 @@
 data_path="/lus/theta-fs0/projects/MultiActiveAI/sage-cloud-data"
 src_dir="/home/brookluo/anl-su23/vicreg-sage"
 # this must be *.py
-model_pyfile="dist_sage_vicreg.py"
+model_pyfile="vit_single_vicreg.py"
+arch="vit_tiny"
 container_file="nvcr_py3_2107.sif"
 container_path="$src_dir/container"
-chkpt_path="$src_dir/test/checkpoint"
-num_epoch=100
-batch_size=128
+chkpt_path="$src_dir/test/checkpoint_vit"
+num_epoch=10
+batch_size=16
 base_lr=0.3
 
 cmd_exec_dist="python -m torch.distributed.launch --nproc_per_node=8"
 cmd_exec_single="python"
 
-cmd_exec=$cmd_exec_dist
+cmd_exec=$cmd_exec_single
 
 cd $src_dir
 module load conda/pytorch; conda activate
 $cmd_exec $model_pyfile --data-dir $data_path \
-    --exp-dir $chkpt_path --arch resnet50 --epochs $num_epoch \
-    --batch-size $batch_size --base-lr $base_lr
+    --exp-dir $chkpt_path --arch $arch --epochs $num_epoch \
+    --batch-size $batch_size --base-lr $base_lr \
+    --rgb-image-size 600 800 --ir-image-size 252 336
