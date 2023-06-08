@@ -19,6 +19,8 @@ from torch import nn, optim
 import torch.distributed as dist
 import torchvision.datasets as datasets
 
+from distributed import init_distributed_mode
+
 import resnet
 
 from sage_transform import SageTransform
@@ -97,15 +99,15 @@ def get_arguments():
 
 def main(args):
     torch.backends.cudnn.benchmark = True
-    # init_distributed_mode(args)
+    init_distributed_mode(args)
     print(args)
     gpu = torch.device(args.device)
 
-#     if args.rank == 0:
-    args.exp_dir.mkdir(parents=True, exist_ok=True)
-    stats_file = open(args.exp_dir / "stats.txt", "a", buffering=1)
-    print(" ".join(sys.argv))
-    print(" ".join(sys.argv), file=stats_file)
+    if args.rank == 0:
+        args.exp_dir.mkdir(parents=True, exist_ok=True)
+        stats_file = open(args.exp_dir / "stats.txt", "a", buffering=1)
+        print(" ".join(sys.argv))
+        print(" ".join(sys.argv), file=stats_file)
 
     # transforms = aug.TrainTransform()
     # dataset = datasets.ImageFolder(args.data_dir / "train", transforms)
@@ -114,13 +116,16 @@ def main(args):
     dataset = SageFolder(args.data_dir / "train/pairs", transform=transform)
 
     # sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
-    sampler = torch.utils.data.RandomSampler(dataset)
+    # sampler = torch.utils.data.RandomSampler(dataset)
 
-    # assert args.batch_size % args.world_size == 0
-    # per_device_batch_size = args.batch_size // args.world_size
+    sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
+    assert args.batch_size % args.world_size == 0
+    per_device_batch_size = args.batch_size // args.world_size
+    # TODO YL: need to modify this part to change image loading method. Two separate
+    # images must be loaded rather than just one image with augmentation.
     loader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=per_device_batch_size,
         num_workers=args.num_workers,
         pin_memory=True,
         sampler=sampler,
@@ -129,8 +134,10 @@ def main(args):
     # IR and RGB images separately
     model_rgb = VICReg(args, num_channels_lr=(3, 1)).cuda(gpu)
     model_IR = VICReg(args, num_channels_lr=(1,3)).cuda(gpu)
-#     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    model_rgb = nn.SyncBatchNorm.convert_sync_batchnorm(model_rgb)
+    model_IR = nn.SyncBatchNorm.convert_sync_batchnorm(model_IR)
+    model_rgb = torch.nn.parallel.DistributedDataParallel(model_rgb, device_ids=[gpu])
+    model_IR = torch.nn.parallel.DistributedDataParallel(model_IR, device_ids=[gpu])
     optimizer_rgb = LARS(
         model_rgb.parameters(),
         lr=0,
@@ -147,8 +154,8 @@ def main(args):
     )
 
     if (args.exp_dir / "model.pth").is_file():
-        # if args.rank == 0:
-        print("resuming from checkpoint")
+        if args.rank == 0:
+            print("resuming from checkpoint")
         ckpt = torch.load(args.exp_dir / "model.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
         model_rgb.load_state_dict(ckpt["model_rgb"])
@@ -165,6 +172,7 @@ def main(args):
         # sampler.set_epoch(epoch)
         for step, ((x, y), _) in enumerate(loader, start=epoch * len(loader)):
             x = x.cuda(gpu, non_blocking=True)
+            # this line is needed for type conversion
             y = y.type(torch.cuda.HalfTensor)
             y = y.cuda(gpu, non_blocking=True)
             
@@ -174,7 +182,6 @@ def main(args):
             optimizer_rgb.zero_grad()
             with torch.cuda.amp.autocast():
                 loss_rgb = model_rgb.forward(x, y)
-#             print(loss_rgb, loss_rgb.shape)
             scaler_rgb.scale(loss_rgb).backward()
             scaler_rgb.step(optimizer_rgb)
             scaler_rgb.update()
@@ -189,40 +196,40 @@ def main(args):
             scaler_IR.update()
 
             current_time = time.time()
-            # if args.rank == 0 and current_time - last_logging > args.log_freq_time:
-            stats = dict(
-                epoch=epoch,
-                step=step,
-                loss_rgb=loss_rgb.item(),
-                loss_IR=loss_IR.item(),
-                time=int(current_time - start_time),
-                lr_rgb=lr_rgb,
-                lr_IR=lr_IR
-            )
-            print(json.dumps(stats))
-            print(json.dumps(stats), file=stats_file)
-            last_logging = current_time
-            if step % 500 == 0:
-                state = dict(
+            if args.rank == 0 and current_time - last_logging > args.log_freq_time:
+                stats = dict(
                     epoch=epoch,
-                    model_rgb=model_rgb.state_dict(),
-                    model_IR=model_IR.state_dict(),
-                    optimizer_rgb=optimizer_rgb.state_dict(),
-                    optimizer_IR=optimizer_IR.state_dict(),
+                    step=step,
+                    loss_rgb=loss_rgb.item(),
+                    loss_IR=loss_IR.item(),
+                    time=int(current_time - start_time),
+                    lr_rgb=lr_rgb,
+                    lr_IR=lr_IR
                 )
-                torch.save(state, args.exp_dir / "model.pth")
-        #if args.rank == 0:
-        state = dict(
-            epoch=epoch + 1,
-            model_rgb=model_rgb.state_dict(),
-            model_IR=model_IR.state_dict(),
-            optimizer_rgb=optimizer_rgb.state_dict(),
-            optimizer_IR=optimizer_IR.state_dict(),
-        )
-        torch.save(state, args.exp_dir / "model.pth")
-    #if args.rank == 0:
-    torch.save(model_rgb.module.backbone.state_dict(), args.exp_dir / "resnet50_rgb.pth")
-    torch.save(model_IR.module.backbone.state_dict(), args.exp_dir / "resnet50_IR.pth")
+                print(json.dumps(stats))
+                print(json.dumps(stats), file=stats_file)
+                last_logging = current_time
+#                 if step % 500 == 0:
+#                     state = dict(
+#                         epoch=epoch,
+#                         model_rgb=model_rgb.state_dict(),
+#                         model_IR=model_IR.state_dict(),
+#                         optimizer_rgb=optimizer_rgb.state_dict(),
+#                         optimizer_IR=optimizer_IR.state_dict(),
+#                     )
+#                     torch.save(state, args.exp_dir / "model.pth")
+        if args.rank == 0:
+            state = dict(
+                epoch=epoch + 1,
+                model_rgb=model_rgb.state_dict(),
+                model_IR=model_IR.state_dict(),
+                optimizer_rgb=optimizer_rgb.state_dict(),
+                optimizer_IR=optimizer_IR.state_dict(),
+            )
+            torch.save(state, args.exp_dir / "model.pth")
+    if args.rank == 0:
+        torch.save(model_rgb.module.backbone.state_dict(), args.exp_dir / "resnet50_rgb.pth")
+        torch.save(model_IR.module.backbone.state_dict(), args.exp_dir / "resnet50_IR.pth")
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
@@ -284,12 +291,10 @@ class VICReg(nn.Module):
             self.projector_right = Projector(args, self.embedding_right)
 
     def forward(self, x, y):
-        x_in = self.backbone_left(x)
-        x = self.projector_left(x_in)
+        x = self.projector_left(self.backbone_left(x))
         # how does this line fix the type conversion thing?!
 #         y = y.type(torch.cuda.HalfTensor)
-        y_in = self.backbone_right(y)
-        y = self.projector_right(y_in)
+        y = self.projector_right(self.backbone_right(y))
 
         # note this line might need to modified to adjust for different dimensions
         # of x and y
