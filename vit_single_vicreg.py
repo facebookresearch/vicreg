@@ -26,11 +26,13 @@ from sage_loader import SageFolder
 
 # Vision Transformers
 import sys
-sys.path.append("../pytorch-image-models-sage")
+# sys.path.append("../pytorch-image-models-sage")
 # althernative add path by
 # export PYTHONPATH="${PYTHONPATH}:full_path_to_pytorch-image-models-sage"
+# from timm.models import vision_transformer as vit_models
+sys.path.append("../self_supervised_bird_analysis")
+import vision_transformer as vit_models
 
-from timm.models import vision_transformer as vit_models
 
 
 def get_arguments():
@@ -57,6 +59,8 @@ def get_arguments():
                         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
                         mixed precision training (--use_fp16 false) to avoid unstabilities.""")
     parser.add_argument('--drop_path_rate', type=float, default=0.1, help="stochastic depth rate")
+    parser.add_argument('--rgb-image-size', nargs=2, type=int, default=(64,64), help="RGB image size in height width order")
+    parser.add_argument('--ir-image-size', nargs=2, type=int, default=(64,64), help="IR image size in height width order")
 
 
     # Optim
@@ -171,6 +175,7 @@ def main(args):
             optimizer_rgb.zero_grad()
             with torch.cuda.amp.autocast():
                 loss_rgb = model_rgb.forward(x, y)
+#             print(loss_rgb, loss_rgb.shape)
             scaler_rgb.scale(loss_rgb).backward()
             scaler_rgb.step(optimizer_rgb)
             scaler_rgb.update()
@@ -249,10 +254,11 @@ class VICReg(nn.Module):
         # print(num_channels_lr)
         # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
         # note that only flexViT can use the patch size argument
-        if args.arch in vit_models.__all__:
+        if args.arch in list(vit_models.__dict__.keys()): # vit_models.__all__:
             self.backbone_left = vit_models.__dict__[args.arch](
                 patch_size=args.patch_size,
                 drop_path_rate=args.drop_path_rate,  # stochastic depth
+                img_size=tuple(args.rgb_image_size),
                 in_chans=num_channels_lr[0],
             )
             self.embedding_left = self.backbone_left.embed_dim
@@ -260,6 +266,7 @@ class VICReg(nn.Module):
             self.backbone_right = vit_models.__dict__[args.arch](
                 patch_size=args.patch_size,
                 drop_path_rate=args.drop_path_rate,  # stochastic depth
+                img_size=tuple(args.ir_image_size),
                 in_chans=num_channels_lr[1],
             )
             self.embedding_right = self.backbone_right.embed_dim
