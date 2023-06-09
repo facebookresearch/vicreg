@@ -151,7 +151,7 @@ def main(args):
     scaler_rgb = torch.cuda.amp.GradScaler()
     scaler_IR = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
-        # sampler.set_epoch(epoch)
+        sampler.set_epoch(epoch)
         for step, ((x, y), _) in enumerate(loader, start=epoch * len(loader)):
             x = x.cuda(gpu, non_blocking=True)
             # this line is needed for type conversion
