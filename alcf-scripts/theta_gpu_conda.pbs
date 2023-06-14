@@ -30,9 +30,12 @@ cmd_exec_single="python"
 
 cmd_exec=$cmd_exec_single
 
+# make directory if one not exist
+[ ! -d $chkpt_path ] && mkdir $chkpt_path
+
 cd $src_dir
 module load conda/pytorch; conda activate
 $cmd_exec $model_pyfile --data-dir $data_path \
     --exp-dir $chkpt_path --arch $arch --epochs $num_epoch \
     --batch-size $batch_size --base-lr $base_lr \
-    --rgb-image-size 600 800 --ir-image-size 252 336
+    # --rgb-image-size 600 800 --ir-image-size 252 336
