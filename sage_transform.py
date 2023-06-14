@@ -26,7 +26,7 @@ class SageTransform(object):
             ]
         )
 
-    def __call__(self, image_pair: Tuple[np.ndarray, np.ndarray]):
+    def __call__(self, image_pair: Tuple[np.ndarray, np.ndarray, str]):
         rgb_out = self.rgb_transform(image_pair[0])
         thermal_out = self.thermal_transform(image_pair[1])
-        return rgb_out, thermal_out
+        return rgb_out, thermal_out, image_pair[2]

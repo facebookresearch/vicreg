@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 
-def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
+def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray, str]:
     """SAGE loader for pytorch `DataLoader` class.
     This function should be used as the `loader` argument in the
     `torch.utils.data.DataLoader` class. The `path` input is the path to
@@ -26,10 +26,11 @@ def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
+    tuple[np.ndarray, np.ndarray, str]
         If the input `path` is a txt file, then return a tuple of 
         ndarray of the rgb and thermal. The first element is the rgb image
-        and the second element is the thermal image.   
+        and the second element is the thermal image. The third element is a
+        path to the file loaded.
 
     Raises
     ------
@@ -55,7 +56,7 @@ def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray]:
     rgb_img = Image.open(rgb_path)
     arr_rgb = np.array(rgb_img.convert("RGB"))
     arr_thermal = np.loadtxt(thermal_path, skiprows=8, delimiter=";")
-    return (arr_rgb, arr_thermal)
+    return (arr_rgb, arr_thermal, str(file_path))
 
 
 class SageFolder(DatasetFolder):
