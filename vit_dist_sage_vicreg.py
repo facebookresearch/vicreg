@@ -54,11 +54,17 @@ def get_arguments():
     parser.add_argument("--mlp", default="8192-8192-8192",
                         help='Size and number of layers of the MLP expander head')
     # ViT arguments
-    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
-                        of input square patches - default 16 (for 16x16 patches). Using smaller
+    parser.add_argument('--patch_size', nargs=2, default=(16, 16), type=int, help="""Size in pixels
+                        of input square patches for RGB and IR images. First element if RGB patch size,
+                        second is IR patch size.
+                        - default 16 (for 16x16 patches) for both RGB and IR images. Using smaller
                         values leads to better performance but requires more memory. Applies only
                         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
                         mixed precision training (--use_fp16 false) to avoid unstabilities.""")
+    parser.add_argument('--use_fp16', default=False, action="store_true", help="""Whether or not
+        to use half precision for training. Improves training time and memory requirements,
+        but can provoke instability and slight decay of performance. We recommend disabling
+        mixed precision if the loss is unstable, if reducing the patch size or if training with bigger ViTs.""")
     parser.add_argument('--drop_path_rate', type=float, default=0.1, help="stochastic depth rate")
     parser.add_argument('--rgb-image-size', nargs=2, type=int, default=(64,64), help="RGB image size in height width order")
     parser.add_argument('--ir-image-size', nargs=2, type=int, default=(64,64), help="IR image size in height width order")
@@ -121,8 +127,6 @@ def main(args):
     sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
     assert args.batch_size % args.world_size == 0
     per_device_batch_size = args.batch_size // args.world_size
-    # TODO YL: need to modify this part to change image loading method. Two separate
-    # images must be loaded rather than just one image with augmentation.
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=per_device_batch_size,
@@ -132,79 +136,84 @@ def main(args):
     )
     # ! need to have two instances of the same architecture to deal with
     # IR and RGB images separately
-    model_rgb = VICReg(args, num_channels_lr=(3, 1)).cuda(gpu)
-    model_IR = VICReg(args, num_channels_lr=(1,3)).cuda(gpu)
-    model_rgb = nn.SyncBatchNorm.convert_sync_batchnorm(model_rgb)
-    model_IR = nn.SyncBatchNorm.convert_sync_batchnorm(model_IR)
-    model_rgb = torch.nn.parallel.DistributedDataParallel(model_rgb, device_ids=[gpu])
-    model_IR = torch.nn.parallel.DistributedDataParallel(model_IR, device_ids=[gpu])
-    optimizer_rgb = LARS(
-        model_rgb.parameters(),
+    model = VICReg(args, num_channels_lr=(3, 1)).cuda(gpu)
+#     model_IR = VICReg(args, num_channels_lr=(1,3)).cuda(gpu)
+    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+#     model_IR = nn.SyncBatchNorm.convert_sync_batchnorm(model_IR)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+#     model_IR = torch.nn.parallel.DistributedDataParallel(model_IR, device_ids=[gpu])
+    optimizer = LARS(
+        model.parameters(),
         lr=0,
         weight_decay=args.wd,
         weight_decay_filter=exclude_bias_and_norm,
         lars_adaptation_filter=exclude_bias_and_norm,
     )
-    optimizer_IR = LARS(
-        model_IR.parameters(),
-        lr=0,
-        weight_decay=args.wd,
-        weight_decay_filter=exclude_bias_and_norm,
-        lars_adaptation_filter=exclude_bias_and_norm,
-    )
+#     optimizer_IR = LARS(
+#         model_IR.parameters(),
+#         lr=0,
+#         weight_decay=args.wd,
+#         weight_decay_filter=exclude_bias_and_norm,
+#         lars_adaptation_filter=exclude_bias_and_norm,
+#     )
 
     if (args.exp_dir / "model.pth").is_file():
         if args.rank == 0:
             print("resuming from checkpoint")
         ckpt = torch.load(args.exp_dir / "model.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
-        model_rgb.load_state_dict(ckpt["model_rgb"])
-        model_IR.load_state_dict(ckpt["model_IR"])
-        optimizer_rgb.load_state_dict(ckpt["optimizer_rgb"])
-        optimizer_IR.load_state_dict(ckpt["optimizer_IR"])
+        model.load_state_dict(ckpt["model"])
+#         model_IR.load_state_dict(ckpt["model_IR"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+#         optimizer_IR.load_state_dict(ckpt["optimizer_IR"])
     else:
         start_epoch = 0
 
     start_time = last_logging = time.time()
-    scaler_rgb = torch.cuda.amp.GradScaler()
-    scaler_IR = torch.cuda.amp.GradScaler()
+    if args.use_fp16:
+        scaler = torch.cuda.amp.GradScaler()
+#     scaler_IR = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
         for step, ((x, y, path), _) in enumerate(loader, start=epoch * len(loader)):
             x = x.cuda(gpu, non_blocking=True)
             # this line is needed for type conversion
-            y = y.type(torch.cuda.HalfTensor)
-            y = y.cuda(gpu, non_blocking=True)
+#             y = y.type(torch.cuda.HalfTensor)
+            y = y.cuda(gpu, non_blocking=True).float()
             
-            lr_rgb = adjust_learning_rate(args, optimizer_rgb, loader, step)
+            lr = adjust_learning_rate(args, optimizer, loader, step)
             
             # rgb model
-            optimizer_rgb.zero_grad()
-            with torch.cuda.amp.autocast():
-                loss_rgb = model_rgb.forward(x, y)
-            scaler_rgb.scale(loss_rgb).backward()
-            scaler_rgb.step(optimizer_rgb)
-            scaler_rgb.update()
-            
+            optimizer.zero_grad()
+            if args.use_fp16:
+                with torch.cuda.amp.autocast():
+                    loss = model.forward(x, y)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss = model.forward(x, y)
+                loss.backward()
+                optimizer.step()
             # IR model
-            lr_IR = adjust_learning_rate(args, optimizer_IR, loader, step)
-            optimizer_IR.zero_grad()
-            with torch.cuda.amp.autocast():
-                loss_IR = model_IR.forward(y, x)
-            scaler_IR.scale(loss_IR).backward()
-            scaler_IR.step(optimizer_IR)
-            scaler_IR.update()
+#             lr_IR = adjust_learning_rate(args, optimizer_IR, loader, step)
+#             optimizer_IR.zero_grad()
+#             with torch.cuda.amp.autocast():
+#                 loss_IR = model_IR.forward(y, x)
+#             scaler_IR.scale(loss_IR).backward()
+#             scaler_IR.step(optimizer_IR)
+#             scaler_IR.update()
 
             current_time = time.time()
             if args.rank == 0 and current_time - last_logging > args.log_freq_time:
                 stats = dict(
                     epoch=epoch,
                     step=step,
-                    loss_rgb=loss_rgb.item(),
-                    loss_IR=loss_IR.item(),
+                    loss=loss.item(),
+#                     loss_IR=loss_IR.item(),
                     time=int(current_time - start_time),
-                    lr_rgb=lr_rgb,
-                    lr_IR=lr_IR
+                    lr=lr,
+#                     lr_IR=lr_IR
                 )
                 print(json.dumps(stats))
                 print(json.dumps(stats), file=stats_file)
@@ -212,24 +221,24 @@ def main(args):
 #                 if step % 500 == 0:
 #                     state = dict(
 #                         epoch=epoch,
-#                         model_rgb=model_rgb.state_dict(),
+#                         model=model.state_dict(),
 #                         model_IR=model_IR.state_dict(),
-#                         optimizer_rgb=optimizer_rgb.state_dict(),
+#                         optimizer=optimizer.state_dict(),
 #                         optimizer_IR=optimizer_IR.state_dict(),
 #                     )
 #                     torch.save(state, args.exp_dir / "model.pth")
         if args.rank == 0:
             state = dict(
                 epoch=epoch + 1,
-                model_rgb=model_rgb.state_dict(),
-                model_IR=model_IR.state_dict(),
-                optimizer_rgb=optimizer_rgb.state_dict(),
-                optimizer_IR=optimizer_IR.state_dict(),
+                model=model.state_dict(),
+#                 model_IR=model_IR.state_dict(),
+                optimizer=optimizer.state_dict(),
+#                 optimizer_IR=optimizer_IR.state_dict(),
             )
             torch.save(state, args.exp_dir / "model.pth")
     if args.rank == 0:
-        torch.save(model_rgb.module.backbone.state_dict(), args.exp_dir / "resnet50_rgb.pth")
-        torch.save(model_IR.module.backbone.state_dict(), args.exp_dir / "resnet50_IR.pth")
+        torch.save(model.module.backbone.state_dict(), args.exp_dir / "vit_b64_rgb16_ir8.pth")
+#         torch.save(model_IR.module.backbone.state_dict(), args.exp_dir / "resnet50_IR.pth")
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
@@ -262,7 +271,7 @@ class VICReg(nn.Module):
         # note that only flexViT can use the patch size argument
         if args.arch in vit_models.__dict__.keys():
             self.backbone_left = vit_models.__dict__[args.arch](
-                patch_size=args.patch_size,
+                patch_size=args.patch_size[0],
                 drop_path_rate=args.drop_path_rate,  # stochastic depth
                 img_size=tuple(args.rgb_image_size),
                 in_chans=num_channels_lr[0],
@@ -270,7 +279,7 @@ class VICReg(nn.Module):
             self.embedding_left = self.backbone_left.embed_dim
             self.projector_left = Projector(args, self.embedding_left)
             self.backbone_right = vit_models.__dict__[args.arch](
-                patch_size=args.patch_size,
+                patch_size=args.patch_size[1],
                 drop_path_rate=args.drop_path_rate,  # stochastic depth
                 img_size=tuple(args.ir_image_size),
                 in_chans=num_channels_lr[1],
