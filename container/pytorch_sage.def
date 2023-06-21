@@ -3,6 +3,7 @@ From: nvcr.io/nvidia/pytorch:21.07-py3
 # ALCF ThetaGPU
 # Cuda compilation tools, release 11.4, V11.4.152
 # Build cuda_11.4.r11.4/compiler.30521435_0
+# https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel_21-07.html
 
 # %setup
 
