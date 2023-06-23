@@ -25,7 +25,7 @@ import torch.distributed as dist
 import torchvision.datasets as datasets
 
 #from distributed import init_distributed_mode
-from utils import init_distributed_mode
+from mpi_utils import init_distributed_mode
 
 import resnet
 

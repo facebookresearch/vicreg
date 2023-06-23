@@ -29,6 +29,7 @@ from sage_loader import SageFolder
 # Vision Transformers
 import sys
 sys.path.append("../dino-sage")
+# sys.path += ["../dino-sage", str(Path("../dino-sage").resolve())]
 # althernative add path by
 # export PYTHONPATH="${PYTHONPATH}:full_path_to_repo"
 
