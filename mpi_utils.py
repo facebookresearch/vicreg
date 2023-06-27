@@ -20,7 +20,7 @@ https://github.com/facebookresearch/detr/blob/master/util/misc.py
 
 """
 @Brookluo: Copied from
-https://github.com/dariodematties/self_supervised_bird_analysis/blob/main/utils.py#L475
+https://github.com/dariodematties/self_supervised_bird_analysis/blob/main/utils.py
 Commit dea9f978cc2095e6aa31ee66c702cc4313fe7c22
 """
 

@@ -177,6 +177,7 @@ def main(args):
 
     start_time = last_logging = time.time()
     if args.use_fp16:
+        print("Use fp16 and AMP")
         scaler = torch.cuda.amp.GradScaler()
 #     scaler_IR = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
