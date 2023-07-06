@@ -59,6 +59,49 @@ def sage_pairloader(path: "str") -> Tuple[np.ndarray, np.ndarray, str]:
     return (arr_rgb, arr_thermal, str(file_path))
 
 
+def sage_rgbloader(path: "str") -> Tuple[np.ndarray, np.ndarray, str]:
+    """SAGE loader for pytorch `DataLoader` class.
+    This function should be used as the `loader` argument in the
+    `torch.utils.data.DataLoader` class. The `path` input is the path to
+    the training dataset containing txt file with pairs of filenames of 
+    the rgb and thermal images. Note the difference between this class and
+    the class above is that the this class only loads the rgb images as 
+    a comparison experiment.
+    
+
+    Parameters
+    ----------
+    path : str
+        A path to the txt file that contains the filename pairs of the rgb (.jpg)
+        and thermal (.csv) files.
+
+    Returns
+    -------
+    tuple[np.ndarray, str]
+        If the input `path` is a txt file, then return a tuple of 
+        ndarray of the rgb and the path to the (pair) file loaded.
+
+    Raises
+    ------
+    ValueError
+        If the input `path` is not a txt file, then raise a ValueError.
+    """    
+    # should load the txt file with both images
+    file_path = Path(path)
+    # train_dir = file_path.parent.parent.parent
+    if file_path.suffix != ".txt":
+        raise ValueError("Only txt file is supported. Use the txt file to "
+                         "load the images")
+    with open(file_path, "r") as fp:
+        lines = fp.readlines()
+    # should be the pair file great-grandparent directory, which is the master
+    # data directory. train / pairs / $node / *.txt
+    rgb_path = Path(file_path.parent.parent.parent, "rgb", lines[0].strip())
+    rgb_img = Image.open(rgb_path)
+    arr_rgb = np.array(rgb_img.convert("RGB"))
+    return (arr_rgb, str(file_path))
+
+
 class SageFolder(DatasetFolder):
     """SAGE dataset class for pytorch `DataLoader` class.
     This class is used for loading SAGE RGB + thermal dataset.
